@@ -19,10 +19,7 @@ jobs:
           distribution: temurin
           java-version: '11'
  
-      - name: Download SoapUI 5.7.2
-        run: |
-          curl -L -o soapui.tar.gz "https://sourceforge.net/projects/soapui/files/soapui/5.7.2/SoapUI-5.7.2-linux-bin.tar.gz/download"
-          tar xzf soapui.tar.gz
+      
  
       - name: Run PayG SIT3 test case
         env:
