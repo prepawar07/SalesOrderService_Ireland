@@ -25,7 +25,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Run SoapUI Test
-      uses: docker://prepawar07/soapui-custom:latest
+      uses: docker://prepawar07/soapui-testrunner:5.7.2
       with:
         args: |
           -s "${{ github.event.inputs.test_suite || 'CreateNewCustomer_SIT4' }}" \
