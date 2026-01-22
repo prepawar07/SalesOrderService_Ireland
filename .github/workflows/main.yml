@@ -1,21 +1,43 @@
-steps:
-- name: Checkout repository
-  uses: actions/checkout@v4
-
-- name: Run SoapUI Test
-  uses: docker://smartbear/soapui-testrunner:latest
-  with:
-    args: |
-      -s "${{ github.event.inputs.test_suite || 'CreateNewCustomer_SIT4' }}" \
-      -c "${{ github.event.inputs.test_case || 'BillPay SIT4' }}" \
-      -r \
-      -a \
-      -f test-results \
-      SalesOrderService-soapui-project.xml
-
-- name: Upload test results
-  uses: actions/upload-artifact@v4
-  if: always()
-  with:
-    name: soapui-test-results
-    path: test-results/
+name: Run SoapUI Test Case
+ 
+on:
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Test Suite Name'
+        required: true
+        default: 'CreateNewCustomer_SIT4'
+      test_case:
+        description: 'Test Case Name'
+        required: true
+        default: 'BillPay SIT4'
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+ 
+jobs:
+  test:
+    runs-on: ubuntu-latest
+ 
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+ 
+    - name: Run SoapUI Test
+      uses: docker://smartbear/soapui-testrunner:latest
+      with:
+        args: |
+          -s "${{ github.event.inputs.test_suite || 'CreateNewCustomer_SIT4' }}" \
+          -c "${{ github.event.inputs.test_case || 'BillPay SIT4' }}" \
+          -r \
+          -a \
+          -f test-results \
+          SalesOrderService-soapui-project.xml
+ 
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: soapui-test-results
+        path: test-results/
