@@ -1,36 +1,43 @@
-name: Run PayG SIT3 SoapUI Test
+name: Run SoapUI Test Case
  
 on:
   workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Test Suite Name'
+        required: true
+        default: 'CreateNewCustomer_SIT4'
+      test_case:
+        description: 'Test Case Name'
+        required: true
+        default: 'BillPay SIT4'
   push:
-    paths:
-      - 'SalesOrderService-soapui-project.xml'
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
  
 jobs:
-  run-soapui:
+  test:
     runs-on: ubuntu-latest
+ 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
  
-      - name: Set up Java 11
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '11'
+    - name: Run SoapUI Test
+      uses: docker://smartbear/soapui-testrunner:latest
+      with:
+        args: |
+          -s "${{ github.event.inputs.test_suite || 'CreateNewCustomer_SIT4' }}" \
+          -c "${{ github.event.inputs.test_case || 'BillPay SIT4' }}" \
+          -r \
+          -a \
+          -f test-results \
+          SalesOrderService-soapui-project.xml
  
-      
- 
-      - name: Run PayG SIT3 test case
-        env:
-          PROJECT_FILE: SalesOrderService-soapui-project.xml
-          TEST_CASE: "PayG SIT3"
-        run: |
-          chmod +x SoapUI-5.7.2/bin/testrunner.sh
-          ./SoapUI-5.7.2/bin/testrunner.sh -j -f test-output -r -R "JUnit-Style" -c "$TEST_CASE" "$PROJECT_FILE"
- 
-      - name: Upload SoapUI test output
-        uses: actions/upload-artifact@v4
-        with:
-          name: soapui-test-output
-          path: test-output
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: soapui-test-results
+        path: test-results/
