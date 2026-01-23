@@ -14,10 +14,10 @@ on:
 
 jobs:
   run-soapui:
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Windows, X64]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Debug runner info
         run: |
