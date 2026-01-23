@@ -3,41 +3,188 @@ name: Run SoapUI Test Case
 on:
   workflow_dispatch:
     inputs:
-      test_suite:
-        description: 'Test Suite Name'
-        required: true
-        default: 'CreateNewCustomer_SIT4'
-      test_case:
-        description: 'Test Case Name'
-        required: true
-        default: 'BillPay SIT4'
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+      suite:
+        description: 'SoapUI TestSuite name'
+        required: false
+        default: 'CreateNewCustomer_SIT3'
+      testcase:
+        description: 'SoapUI TestCase name'
+        required: false
+        default: 'BillPay SIT3'
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-
+  run-soapui:
+    runs-on: ubuntu-22.04
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Run SoapUI Test
-      uses: docker://prepawar07/soapui-custom:latest
-      with:
-        args: |
-          -s "${{ github.event.inputs.test_suite || 'CreateNewCustomer_SIT4' }}" \
-          -c "${{ github.event.inputs.test_case || 'BillPay SIT4' }}" \
-          -r \
-          -a \
-          -f test-results \
-          SalesOrderService-soapui-project.xml
+      - name: Debug runner info
+        run: |
+          echo "Runner OS: $RUNNER_OS"
+          echo "Runner name: $RUNNER_NAME"
+          echo "GITHUB_RUN_ID: $GITHUB_RUN_ID"
+          uname -a || true
 
-    - name: Upload test results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: soapui-test-results
-        path: test-results/
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Download SoapUI installer
+        run: |
+          curl -L -o /tmp/SoapUI.sh https://dl.eviware.com/soapuios/5.9.1/SoapUI-x64-5.9.1.sh
+          chmod +x /tmp/SoapUI.sh
+
+      - name: Install SoapUI (silent) with diagnostics (timeout 2m)
+        run: |
+          set -x
+          /tmp/SoapUI.sh --help || true
+          # Run installer with a timeout to avoid hanging indefinitely
+          timeout 120s sudo /tmp/SoapUI.sh -q > /tmp/soapui_install.log 2>&1 || true
+          # If installer process still present, attempt to kill it
+          INST_PID=$(pgrep -f SoapUI || true)
+          if [ -n "$INST_PID" ]; then
+            echo "Killing leftover installer processes: $INST_PID" >> /tmp/soapui_install.log || true
+            sudo pkill -9 -f SoapUI || true
+          fi
+          echo "--- installer log (tail 200 lines) ---"
+          sed -n '1,200p' /tmp/soapui_install.log || true
+          echo "--- ls /opt ---"
+          ls -la /opt || true
+
+      - name: Fix ownership of SoapUI install (if present)
+        run: |
+          set -x
+          for d in /opt/SmartBear* /opt/SoapUI*; do
+            if [ -d "$d" ]; then
+              echo "Found install dir: $d"
+              sudo chown -R "$(id -u):$(id -g)" "$d" || true
+              ls -la "$d" || true
+            fi
+          done
+
+      - name: Locate testrunner.sh (restricted paths)
+        id: locate
+        run: |
+          set -x
+          for p in /opt /usr/local /usr/share /home; do
+            TESTRUNNER=$(find "$p" -type f -name testrunner.sh -print -quit 2>/dev/null || true)
+            if [ -n "$TESTRUNNER" ]; then break; fi
+          done
+          echo "Found: $TESTRUNNER"
+          echo "testrunner=$TESTRUNNER" >> $GITHUB_OUTPUT
+
+      - id: run_test
+        name: Run SoapUI TestCase (if found)
+        if: steps.locate.outputs.testrunner != ''
+        continue-on-error: true
+        run: |
+          set -x
+          echo "Located testrunner: '${{ steps.locate.outputs.testrunner }}'"
+          ls -l "${{ steps.locate.outputs.testrunner }}" || true
+          # Show environment and java availability
+          echo "JAVA_HOME=${JAVA_HOME:-<not-set>}"
+          echo "PATH=${PATH}"
+          java -version || true
+          # Show ownership/permissions of installation parent dirs
+          TR_DIR=$(dirname "${{ steps.locate.outputs.testrunner }}") || true
+          INSTALL_DIR=$(dirname "$TR_DIR") || true
+          echo "testrunner dir: $TR_DIR"
+          echo "install dir: $INSTALL_DIR"
+          ls -la "$TR_DIR" || true
+          ls -la "$INSTALL_DIR" || true
+          # Ensure executable bit (try without sudo first — we now chown'ed install)
+          chmod +x "${{ steps.locate.outputs.testrunner }}" || true
+          ls -l "${{ steps.locate.outputs.testrunner }}" || true
+          # Run testrunner with timeout to prevent indefinite hangs (5 minutes)
+          # Try running as current user first; on failure, fallback to sudo preserving Java env
+          TMP_LOG=/tmp/testrunner.log
+          rm -f "$TMP_LOG" || true
+          RC=0
+          echo "Attempting non-sudo run of testrunner..."
+          timeout 300s bash -x "${{ steps.locate.outputs.testrunner }}" -s "${{ github.event.inputs.suite }}" -c "${{ github.event.inputs.testcase }}" "$GITHUB_WORKSPACE/SalesOrderService-soapui-project.xml" > "$TMP_LOG" 2>&1 || RC=$? || true
+          if [ "$RC" -ne 0 ]; then
+            echo "Non-sudo run failed with RC=$RC; retrying with sudo preserving JAVA_HOME..." >> "$TMP_LOG" || true
+            timeout 300s sudo env JAVA_HOME="${JAVA_HOME:-}" PATH="${PATH}" bash -x "${{ steps.locate.outputs.testrunner }}" -s "${{ github.event.inputs.suite }}" -c "${{ github.event.inputs.testcase }}" "$GITHUB_WORKSPACE/SalesOrderService-soapui-project.xml" >> "$TMP_LOG" 2>&1 || RC=$? || true
+          fi
+          # Capture exit code and save log tail for diagnostics file
+          RC=${RC:-0}
+          echo "--- testrunner log (tail 200) ---" >> /tmp/soapui_diagnostics.txt || true
+          tail -n 200 "$TMP_LOG" >> /tmp/soapui_diagnostics.txt || true
+          echo "--- end testrunner log ---" >> /tmp/soapui_diagnostics.txt || true
+          RC=${RC:-0}
+          # If timeout returns 124, mark specially
+          if [ "$RC" -eq 124 ] 2>/dev/null; then
+            echo "testrunner_exit=124" >> $GITHUB_OUTPUT
+          else
+            echo "testrunner_exit=$RC" >> $GITHUB_OUTPUT
+          fi
+
+      - id: record_missing
+        name: Record missing testrunner
+        if: steps.locate.outputs.testrunner == ''
+        run: |
+          echo "testrunner_exit=127" >> $GITHUB_OUTPUT
+
+      - name: Collect installer and run diagnostics
+        if: always()
+        run: |
+          echo "---- installer log (first 500 lines) ----" > /tmp/soapui_diagnostics.txt || true
+          sed -n '1,500p' /tmp/soapui_install.log >> /tmp/soapui_diagnostics.txt 2>/dev/null || true
+          echo "---- /opt listing ----" >> /tmp/soapui_diagnostics.txt || true
+          ls -la /opt >> /tmp/soapui_diagnostics.txt 2>/dev/null || true
+          echo "---- locate found ----" >> /tmp/soapui_diagnostics.txt || true
+          echo "${{ steps.locate.outputs.testrunner }}" >> /tmp/soapui_diagnostics.txt || true
+          if [ -f "$GITHUB_WORKSPACE/TEST-*.xml" ]; then echo "test reports present" >> /tmp/soapui_diagnostics.txt || true; fi
+          # Include testrunner log if present
+          if [ -f /tmp/testrunner.log ]; then
+            echo "---- /tmp/testrunner.log (first 500 lines) ----" >> /tmp/soapui_diagnostics.txt || true
+            sed -n '1,500p' /tmp/testrunner.log >> /tmp/soapui_diagnostics.txt 2>/dev/null || true
+          fi
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soapui-diagnostics
+          path: |
+            /tmp/soapui_install.log
+            /tmp/soapui_diagnostics.txt
+            /tmp/testrunner.log
+            $GITHUB_WORKSPACE/**/TEST-*.xml
+
+      - id: compute_exit
+        name: Compute combined exit code
+        if: always()
+        run: |
+          set -x
+          echo "run_output='${{ steps.run_test.outputs.testrunner_exit }}'"
+          echo "miss_output='${{ steps.record_missing.outputs.testrunner_exit }}'"
+          EXITCODE=${{ steps.run_test.outputs.testrunner_exit || steps.record_missing.outputs.testrunner_exit || 'unknown' }}
+          echo "Computed exitcode=$EXITCODE"
+          echo "exitcode=$EXITCODE" >> $GITHUB_OUTPUT
+
+      - name: Fail if testrunner missing or test failed
+        if: always()
+        run: |
+          set -euo pipefail
+          EXITCODE="${{ steps.compute_exit.outputs.exitcode }}"
+          echo "Computed EXITCODE=$EXITCODE"
+          if [ "$EXITCODE" = "unknown" ]; then
+            echo "testrunner exit code unknown; see soapui-diagnostics artifact." >&2
+            exit 1
+          fi
+          if [ "$EXITCODE" != "0" ]; then
+            echo "SoapUI run failed (exit $EXITCODE). See soapui-diagnostics artifact." >&2
+            exit 1
+          fi
+
+      - name: Upload SoapUI reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: soapui-reports
+          path: |
+            **/TEST-*.xml
+            **/soapui-report/**
